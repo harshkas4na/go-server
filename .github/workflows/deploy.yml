@@ -1,0 +1,62 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: eu-north-1
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and Push Docker Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64
+        push: true
+        tags: 952669595471.dkr.ecr.eu-north-1.amazonaws.com/todo-api:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Deploy to EC2 via SSH
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ec2-user
+        key: ${{ secrets.EC2_SSH_KEY }}
+        script: |
+          # 1. Log into ECR on the server
+          aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin 952669595471.dkr.ecr.eu-north-1.amazonaws.com
+          
+          # 2. Stop and clear any existing running container
+          docker stop todo-app || true
+          docker rm todo-app || true
+          
+          # 3. Pull the updated cloud image
+          docker pull 952669595471.dkr.ecr.eu-north-1.amazonaws.com/todo-api:latest
+          
+          # 4. Start the fresh container with your secure DB url
+          docker run -d \
+            --name todo-app \
+            -p 8080:8080 \
+            -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            952669595471.dkr.ecr.eu-north-1.amazonaws.com/todo-api:latest
